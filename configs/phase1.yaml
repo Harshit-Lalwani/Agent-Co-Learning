@@ -1,0 +1,30 @@
+environment:
+  num_agents: 5
+  num_assets: 4
+  episode_length: 300
+  leverage_cap: 2.0
+
+trust:
+  trust_alpha: 0.2
+  trust_lambda: 2.0
+  entropy_window: 30
+  entropy_slope_threshold: 0.0005
+  convergence_persistence: 10
+
+predictor:
+  predictor_mode: moving_average
+  predictor_window: 20
+  noise_std: 0.01
+
+market:
+  mu: [0.0004, 0.0003, 0.0002, 0.0005]
+  cov:
+    - [0.00040, 0.00010, 0.00008, 0.00005]
+    - [0.00010, 0.00035, 0.00006, 0.00004]
+    - [0.00008, 0.00006, 0.00030, 0.00003]
+    - [0.00005, 0.00004, 0.00003, 0.00045]
+
+experiment:
+  num_seeds: 5
+  base_seed: 2026
+  output_root: outputs/phase1
