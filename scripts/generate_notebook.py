@@ -1,0 +1,213 @@
+import json
+
+cells = [
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "# Phase 4 Evaluation Report: Trust-Weighted Multi-Agent Co-Learning\n",
+            "This notebook evaluates the performance differences between the Phase 2 baseline (S1) and the Phase 3 trust-weighted imitation policies (S2)."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "import pandas as pd\n",
+            "import numpy as np\n",
+            "import matplotlib.pyplot as plt\n",
+            "import seaborn as sns\n",
+            "from pathlib import Path\n",
+            "\n",
+            "sns.set_theme(style=\"whitegrid\")"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Data Loading\n",
+            "We load the baseline aggregates and the parameter sweeps from `outputs/ablations`."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "root = Path(\"outputs/ablations\")\n",
+            "runs = []\n",
+            "for file in root.glob(\"**/runs/*_summary.parquet\"):\n",
+            "    run_df = pd.read_parquet(file)\n",
+            "    run_df[\"experiment_name\"] = file.parts[-3] # ablation_root / run_name / runs / file\n",
+            "    runs.append(run_df)\n",
+            "\n",
+            "if runs:\n",
+            "    df = pd.concat(runs, ignore_index=True)\n",
+            "    baseline = df[df[\"experiment_name\"] == \"phase2_baseline\"]\n",
+            "    ablations = df[df[\"experiment_name\"] != \"phase2_baseline\"]\n",
+            "else:\n",
+            "    print(\"No outputs found in outputs/ablations!\")\n",
+            "    df = pd.DataFrame()"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## RQ1: Trust Convergence\n",
+            "We visualize trust entropy and asymmetry tracking from the baseline."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "def plot_running_metrics(train_file):\n",
+            "    steps = pd.read_parquet(train_file)\n",
+            "    fig, axes = plt.subplots(1, 2, figsize=(12, 4))\n",
+            "    \n",
+            "    # Entropy over steps\n",
+            "    if 'entropy_0' in steps.columns:\n",
+            "        for i in range(5):\n",
+            "            axes[0].plot(steps[\"step\"], steps[f\"entropy_{i}\"], label=f\"Agent {i}\")\n",
+            "    axes[0].set_title(\"Trust Entropy over Time\")\n",
+            "    axes[0].set_xlabel(\"Steps\")\n",
+            "    \n",
+            "    # Asymmetry\n",
+            "    if 'asymmetry_index' in steps.columns:\n",
+            "        axes[1].plot(steps[\"step\"], steps[\"asymmetry_index\"], color='purple')\n",
+            "    axes[1].set_title(\"Asymmetry Index over Time\")\n",
+            "    axes[1].set_xlabel(\"Steps\")\n",
+            "    \n",
+            "    plt.tight_layout()\n",
+            "    plt.show()\n",
+            "\n",
+            "sample_file = root / \"phase2_baseline\" / \"train\" / \"steps\" / \"seed_02026_steps.parquet\"\n",
+            "if sample_file.exists():\n",
+            "    plot_running_metrics(sample_file)"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## RQ2: Performance Improvement (S1 vs S2)\n",
+            "Using final Sharpe Ratio means as the primary comparison metric."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "if not df.empty:\n",
+            "    eval_sharpe_cols = [c for c in df.columns if 'eval_final_sharpe_mean_episode' in c]\n",
+            "\n",
+            "    if len(eval_sharpe_cols) > 0:\n",
+            "        plot_data = []\n",
+            "        \n",
+            "        for _, row in baseline.iterrows():\n",
+            "            plot_data.append({\"Experiment\": \"Baseline (S1)\", \"Sharpe\": row[eval_sharpe_cols[-1]], \"Beta\": 0.0, \"Predictor\": \"None\"})\n",
+            "            \n",
+            "        for _, row in ablations.iterrows():\n",
+            "            name = row[\"experiment_name\"]\n",
+            "            beta = name.split(\"_beta_\")[1].replace(\"p\", \".\") if \"_beta_\" in name else \"0.0\"\n",
+            "            pred = name.split(\"_beta_\")[0].replace(\"pred_\", \"\") if \"pred_\" in name else \"unknown\"\n",
+            "            plot_data.append({\"Experiment\": f\"{pred} (B={beta})\", \"Sharpe\": row[eval_sharpe_cols[-1]], \"Beta\": float(beta), \"Predictor\": pred})\n",
+            "            \n",
+            "        plot_df = pd.DataFrame(plot_data)\n",
+            "        \n",
+            "        plt.figure(figsize=(14, 6))\n",
+            "        sns.boxplot(data=plot_df, x=\"Experiment\", y=\"Sharpe\")\n",
+            "        plt.xticks(rotation=45, ha=\"right\")\n",
+            "        plt.title(\"Distribution of Final Evaluation Sharpe Ratios\")\n",
+            "        plt.tight_layout()\n",
+            "        plt.show()"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## RQ3: Asymmetric Trust Analysis\n",
+            "Does trust magnitude correlate with increased sharpe?"
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "if not df.empty and 'final_eval_asymmetry' in df.columns and len(eval_sharpe_cols) > 0:\n",
+            "    plt.figure(figsize=(6, 5))\n",
+            "    sns.scatterplot(data=df, x=\"final_eval_asymmetry\", y=eval_sharpe_cols[-1], hue=\"experiment_name\", legend=False)\n",
+            "    plt.title(\"Asymmetry vs Sharpe Ratio across seeds/ablations\")\n",
+            "    plt.xlabel(\"Final Eval Asymmetry\")\n",
+            "    plt.ylabel(\"Final Eval Sharpe Ratio\")\n",
+            "    plt.grid(True)\n",
+            "    plt.show()"
+        ]
+    },
+    {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": [
+            "## Ablation Sweeps\n",
+            "Effect of `imitation_beta` on the Sharpe ratio."
+        ]
+    },
+    {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": [
+            "if not df.empty and len(eval_sharpe_cols) > 0:\n",
+            "    s2_data = plot_df[plot_df[\"Experiment\"] != \"Baseline (S1)\"]\n",
+            "    if not s2_data.empty:\n",
+            "        plt.figure(figsize=(8, 5))\n",
+            "        sns.lineplot(data=s2_data, x=\"Beta\", y=\"Sharpe\", hue=\"Predictor\", marker=\"o\", err_style=\"bars\")\n",
+            "        plt.title(\"Sensitivity to Imitation Beta\")\n",
+            "        plt.axhline(plot_df[plot_df[\"Experiment\"] == \"Baseline (S1)\"][\"Sharpe\"].mean(), color='r', linestyle='--', label=\"Baseline Mean\")\n",
+            "        plt.legend()\n",
+            "        plt.grid(True)\n",
+            "        plt.show()"
+        ]
+    }
+]
+
+notebook = {
+    "cells": cells,
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python 3",
+            "language": "python",
+            "name": "python3"
+        },
+        "language_info": {
+            "codemirror_mode": {
+                "name": "ipython",
+                "version": 3
+            },
+            "file_extension": ".py",
+            "mimetype": "text/x-python",
+            "name": "python",
+            "nbconvert_exporter": "python",
+            "pygments_lexer": "ipython3",
+            "version": "3.10.0"
+        }
+    },
+    "nbformat": 4,
+    "nbformat_minor": 4
+}
+
+with open("phase4_evaluation_report.ipynb", "w", encoding="utf-8") as f:
+    json.dump(notebook, f, indent=2)

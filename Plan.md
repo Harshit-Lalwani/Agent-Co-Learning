@@ -145,3 +145,138 @@ $$
 - Keep all interfaces stable (environment, predictor, metrics, logger).
 - Add RL on top of the same config + logging pipeline.
 - Maintain strict comparability between S1 and S2 experiments.
+
+## Detailed Plan: Phase 2 (Baseline Learning / S1)
+
+### Objective
+Introduce actual learning while keeping the environment fixed and the experiment modular:
+- independent agent policies
+- per-agent observations and rewards
+- training and evaluation loops
+- benchmark return, risk, and stability against the Phase 1 scaffold
+
+The focus is a clean baseline, not trust weighting yet.
+
+### Locked Design Choices
+- Keep the same synthetic market as Phase 1
+- Keep the same action space and leverage cap
+- Keep the same logging contract where possible
+- Keep trust diagnostics available for analysis, but do not use trust to drive actions yet
+- Use independent agents as the baseline S1 condition
+
+### Configuration-First Requirement (No Hard Coding)
+All new learning behavior must be externalized to config:
+- learning algorithm selection
+- observation builder mode
+- reward shaping parameters, if any
+- exploration schedule
+- optimizer settings
+- replay or rollout settings, if used
+- episode count and evaluation frequency
+- checkpoint and artifact paths
+
+### Core System Pieces
+1. Environment wrapper
+- Preserve the Phase 1 market simulator interface
+- Expose reset/step semantics suitable for training
+- Keep deterministic seeding behavior
+
+2. Observation builder
+- Define what each agent can observe at each step
+- Start with a homogeneous baseline observation set
+- Keep the observation schema modular so heterogeneous views can be added later
+
+3. Agent policy
+- Implement one independent policy per agent
+- Keep the policy API separate from the environment API
+- Support action sampling during training and deterministic evaluation
+
+4. Learning update
+- Add the baseline learning rule behind a small interface
+- Keep the optimizer and update logic isolated from rollout collection
+- Make the update path swappable for future S2 logic
+
+5. Evaluation and logging
+- Reuse the Phase 1 logger structure where possible
+- Record learning curves, portfolio metrics, and stability diagnostics
+- Keep seed-level summaries comparable to Phase 1 outputs
+
+### Suggested Baseline Behavior
+- Each agent learns from its own observation stream
+- Each agent chooses portfolio weights subject to the same leverage constraint
+- Rewards come from realized portfolio returns
+- Exploration is explicit and configurable
+- Trust values remain diagnostic only in this phase
+
+### Implementation Work Plan (5 Days)
+1. Day 1
+- Define the learning-facing environment and observation schema
+- Add agent policy and learner interfaces
+- Reuse the Phase 1 config structure for new learning settings
+
+2. Day 2
+- Implement a stable independent baseline learner
+- Connect action selection to the existing portfolio constraint logic
+- Add training/evaluation mode separation
+
+3. Day 3
+- Wire in per-agent rollout collection and update steps
+- Add learning-curve metrics and checkpointing
+- Verify deterministic runs for a fixed seed
+
+4. Day 4
+- Extend logging for training summaries and evaluation summaries
+- Keep trust diagnostics available as passive analysis outputs
+- Run a first multi-seed baseline sweep
+
+5. Day 5
+- Compare baseline learning against Phase 1 no-learning results
+- Check stability, variance, and seed sensitivity
+- Freeze the S1 interface for Phase 3 trust-weighted work
+
+### Required Outputs from Phase 2
+- Per-step training traces for each agent
+- Per-episode or per-run summaries with return and risk metrics
+- Seed-level evaluation summaries
+- Stable checkpoints or saved policies
+- Diagnostics that remain comparable with Phase 1
+
+### Phase 2 Exit Criteria
+1. Independent baseline learning runs end-to-end for multiple seeds.
+2. Training and evaluation outputs are reproducible for fixed seeds.
+3. Baseline performance metrics are written in the same style as Phase 1 outputs.
+4. The agent/policy interfaces are stable enough to support Phase 3 trust-weighted learning.
+
+### Notes for Phase 3 Handoff
+- Keep the policy API modular so trust weighting can wrap it later.
+- Keep observation and logging schemas stable across S1 and S2.
+- Preserve seed alignment so direct comparisons remain valid.
+
+## Detailed Plan: Phase 3 (Trust-Weighted Strategy / S2)
+
+### Objective
+Integrate the trust metric calculated passively in Phase 1 and 2 directly into the action selection loop of the agents. This will enable trust-weighted policy imitation where agents blend their intended portfolio allocations with those of highly trusted peers.
+
+### Implementation Setup
+- Create a `Phase3Config` building upon the S1 framework, injecting an `imitation_beta` constant to govern the strength of the trust weighting mechanism.
+- Abstract the action computation of the `LinearGaussianPolicy` to separate base mean construction from stochastic sampling.
+- Implement `phase3_runner.py` wherein independent agent actions ($\mu_i$) are aggregated into hybrid means via $\mu_{i, hybrid} = (1-\beta)\mu_i + \beta \sum_j \tau_{ij}\mu_j$.
+- Adjust the advantage gradients inside the policy update mathematically by factoring in the scalar $(1-\beta)$.
+- Maintain rigid schema outputs identical to Phase 2 to allow for fully harmonized comparisons.
+
+### Phase 3 Exit Criteria
+1. The S2 strategy executes successfully end-to-end identically to S1.
+2. The exact same seed permutations are perfectly tracked and evaluated without errors.
+3. Trust outputs dictate differing actions compared to the baseline run.
+
+## Detailed Plan: Phase 4 (Evaluation and Report)
+
+### Objective
+Synthesize the multi-seed outputs of the independent S1 models and the collaborative S2 models into an analytical, statically sound final project report that addresses the core research questions.
+
+### Execution Path
+- **Parameter Sweeps**: Run large scale ablations using `scripts/run_ablations.py` across multiple `imitation_beta` scalars and predictors (`moving_average` vs `noisy_oracle`).
+- **Jupyter Report**: Synthesize outputs using standard pandas pipelines into `phase4_evaluation_report.ipynb`.
+- **RQ1**: Plot trust entropy and the asymmetry index to verify trust matrix convergence.
+- **RQ2**: Verify the performance difference directly between the S1 and S2 strategies using statistical Sharpe box plots.
+- **RQ3**: Plot terminal asymmetry thresholds against individual evaluation Sharpe scores to study trust-driven inequality.
