@@ -4,10 +4,11 @@ import numpy as np
 
 
 class TrustMatrix:
-    def __init__(self, num_agents: int, alpha: float, lambda_: float) -> None:
+    def __init__(self, num_agents: int, alpha: float, lambda_: float, normalization_mode: str = "softmax") -> None:
         self.num_agents = num_agents
         self.alpha = alpha
         self.lambda_ = lambda_
+        self.normalization_mode = normalization_mode
         self.raw = np.zeros((num_agents, num_agents), dtype=float)
 
     def reset(self) -> None:
@@ -38,24 +39,36 @@ class TrustMatrix:
                 self.raw[i, j] = (1.0 - self.alpha) * self.raw[i, j] + self.alpha * score
 
     def normalized(self) -> np.ndarray:
-        """Row-wise softmax normalization, excluding self-trust (diagonal)."""
+        """Row-wise normalization (softmax or linear), excluding self-trust (diagonal)."""
         normalized = np.zeros_like(self.raw)
         for i in range(self.num_agents):
             row = self.raw[i].copy()
-            row[i] = -np.inf
-            finite_mask = np.isfinite(row)
-            if not finite_mask.any():
-                # Fallback: uniform trust over peers
-                normalized[i] = 1.0 / (self.num_agents - 1)
-                normalized[i, i] = 0.0
-                continue
-            row_max = np.max(row[finite_mask])
-            exps = np.exp(row - row_max)
-            exps[i] = 0.0
-            denom = np.sum(exps)
-            if denom == 0.0:
-                exps = np.ones(self.num_agents, dtype=float)
+            if self.normalization_mode == "softmax":
+                row[i] = -np.inf
+                finite_mask = np.isfinite(row)
+                if not finite_mask.any():
+                    # Fallback: uniform trust over peers
+                    normalized[i] = 1.0 / (self.num_agents - 1)
+                    normalized[i, i] = 0.0
+                    continue
+                row_max = np.max(row[finite_mask])
+                exps = np.exp(row - row_max)
                 exps[i] = 0.0
                 denom = np.sum(exps)
-            normalized[i] = exps / denom
+                if denom == 0.0:
+                    exps = np.ones(self.num_agents, dtype=float)
+                    exps[i] = 0.0
+                    denom = np.sum(exps)
+                normalized[i] = exps / denom
+            elif self.normalization_mode == "linear":
+                row[i] = 0.0
+                denom = np.sum(row)
+                if denom <= 1e-8:
+                    vals = np.ones(self.num_agents, dtype=float)
+                    vals[i] = 0.0
+                    normalized[i] = vals / np.sum(vals)
+                else:
+                    normalized[i] = row / denom
+            else:
+                raise ValueError(f"Unknown normalization mode: {self.normalization_mode}")
         return normalized

@@ -53,6 +53,7 @@ class TrustConfig(BaseModel):
     # If True, trust is not reset between episodes (accumulates across training).
     # If False (default), trust resets at the start of each episode.
     trust_persistence: bool = False
+    normalization_mode: Literal["softmax", "linear"] = "softmax"
 
     @field_validator("trust_alpha")
     @classmethod

@@ -291,6 +291,7 @@ def run_experiment(config: ExperimentRunConfig) -> None:
             num_agents=num_agents,
             alpha=config.trust.trust_alpha,
             lambda_=config.trust.trust_lambda,
+            normalization_mode=config.trust.normalization_mode,
         )
 
         # Markowitz benchmark for this seed (ground-truth upper bound).
