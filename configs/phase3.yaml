@@ -1,15 +1,16 @@
 environment:
   num_agents: 5
   num_assets: 4
-  episode_length: 300
+  episode_length: 200
   leverage_cap: 2.0
 
 trust:
   trust_alpha: 0.2
   trust_lambda: 2.0
   entropy_window: 30
-  entropy_slope_threshold: 0.0005
-  convergence_persistence: 10
+  entropy_slope_threshold: 0.00005
+  convergence_persistence: 30
+  trust_persistence: false  # reset trust each episode
 
 predictor:
   predictor_mode: moving_average
@@ -17,16 +18,17 @@ predictor:
   noise_std: 0.01
 
 learning:
-  num_train_episodes: 10
-  num_eval_episodes: 3
-  observation_window: 20
+  num_train_episodes: 200
+  num_eval_episodes: 10
+  observation_window: 5
   learning_rate: 0.05
   exploration_std: 0.1
-  imitation_beta: 0.2
   reward_baseline_decay: 0.95
   policy_init_scale: 0.01
+  imitation_beta: 0.2    # S2: trust-weighted imitation
   policy_mode: linear_gaussian
   observation_mode: history_with_private_state
+  steps_per_year: 252
 
 market:
   mu: [0.0004, 0.0003, 0.0002, 0.0005]

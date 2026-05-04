@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
+from twmacl.baselines import evaluate_markowitz, markowitz_sharpe_analytical
 from twmacl.config import Phase1Config
 from twmacl.diagnostics import asymmetry_index, convergence_flags, entropy_per_agent, rolling_entropy_slope
 from twmacl.logging_io import ParquetSink, write_aggregate_index, write_summary
@@ -36,6 +37,10 @@ def _flatten_vector(vector: np.ndarray, prefix: str) -> dict[str, float]:
 def run_phase1(config: Phase1Config) -> None:
     output_root = config.output_root_path()
     output_root.mkdir(parents=True, exist_ok=True)
+
+    mu = np.asarray(config.market.mu, dtype=float)
+    cov = np.asarray(config.market.cov, dtype=float)
+    markowitz_analytical = markowitz_sharpe_analytical(mu, cov)
 
     summaries: list[dict[str, float | int | str]] = []
     config_hash = config.config_hash()
@@ -145,6 +150,7 @@ def run_phase1(config: Phase1Config) -> None:
         summary.update(_flatten_vector(sharpe.cumulative_return(), "cumulative_return"))
         summary.update(_flatten_vector(sharpe_running, "sharpe_ratio"))
         summary.update(_flatten_vector(max_leverage, "max_leverage_used"))
+        summary["markowitz_sharpe_analytical"] = float(markowitz_analytical)
 
         run_file = output_root / "runs" / f"seed_{seed:05d}_summary.parquet"
         write_summary(summary, run_file)

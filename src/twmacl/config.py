@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class EnvironmentConfig(BaseModel):
     num_agents: int = 5
     num_assets: int = 4
-    episode_length: int = 300
+    episode_length: int = 200
     leverage_cap: float = 2.0
 
     @field_validator("num_agents")
@@ -48,8 +48,11 @@ class TrustConfig(BaseModel):
     trust_alpha: float = 0.2
     trust_lambda: float = 2.0
     entropy_window: int = 30
-    entropy_slope_threshold: float = 0.0005
-    convergence_persistence: int = 10
+    entropy_slope_threshold: float = 0.00005
+    convergence_persistence: int = 30
+    # If True, trust is not reset between episodes (accumulates across training).
+    # If False (default), trust resets at the start of each episode.
+    trust_persistence: bool = False
 
     @field_validator("trust_alpha")
     @classmethod
@@ -119,16 +122,20 @@ class ExperimentConfig(BaseModel):
 
 
 class LearningConfig(BaseModel):
-    num_train_episodes: int = 10
-    num_eval_episodes: int = 3
-    observation_window: int = 20
+    num_train_episodes: int = 200
+    num_eval_episodes: int = 10
+    observation_window: int = 5
     learning_rate: float = 0.05
     exploration_std: float = 0.1
     reward_baseline_decay: float = 0.95
     policy_init_scale: float = 0.01
+    # imitation_beta=0.0 → S1 (independent learning)
+    # imitation_beta>0.0 → S2 (trust-weighted imitation)
     imitation_beta: float = 0.0
     policy_mode: Literal["linear_gaussian"] = "linear_gaussian"
     observation_mode: Literal["history_with_private_state"] = "history_with_private_state"
+    # Steps per year for annualized Sharpe (252 = daily, 1 = raw)
+    steps_per_year: int = 252
 
     @field_validator("num_train_episodes", "num_eval_episodes", "observation_window")
     @classmethod
@@ -165,6 +172,23 @@ class LearningConfig(BaseModel):
             raise ValueError("imitation_beta must be in [0, 1]")
         return value
 
+    @field_validator("steps_per_year")
+    @classmethod
+    def _validate_steps_per_year(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("steps_per_year must be >= 1")
+        return value
+
+
+def _validate_market_shape(market: MarketConfig, num_assets: int, cls_name: str) -> None:
+    if len(market.mu) != num_assets:
+        raise ValueError(f"{cls_name}: market.mu length must match environment.num_assets")
+    if len(market.cov) != num_assets:
+        raise ValueError(f"{cls_name}: market.cov rows must match environment.num_assets")
+    for row in market.cov:
+        if len(row) != num_assets:
+            raise ValueError(f"{cls_name}: market.cov must be square with size num_assets")
+
 
 class Phase1Config(BaseModel):
     environment: EnvironmentConfig
@@ -175,14 +199,7 @@ class Phase1Config(BaseModel):
 
     @model_validator(mode="after")
     def _validate_market_shape(self) -> "Phase1Config":
-        num_assets = self.environment.num_assets
-        if len(self.market.mu) != num_assets:
-            raise ValueError("market.mu length must match environment.num_assets")
-        if len(self.market.cov) != num_assets:
-            raise ValueError("market.cov rows must match environment.num_assets")
-        for row in self.market.cov:
-            if len(row) != num_assets:
-                raise ValueError("market.cov must be square with size num_assets")
+        _validate_market_shape(self.market, self.environment.num_assets, "Phase1Config")
         return self
 
     def seed_values(self) -> list[int]:
@@ -198,7 +215,9 @@ class Phase1Config(BaseModel):
         return hashlib.md5(self.canonical_json().encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
-class Phase2Config(BaseModel):
+class ExperimentRunConfig(BaseModel):
+    """Unified config for S1 (imitation_beta=0) and S2 (imitation_beta>0) experiments."""
+
     environment: EnvironmentConfig
     trust: TrustConfig
     predictor: PredictorConfig
@@ -207,15 +226,8 @@ class Phase2Config(BaseModel):
     experiment: ExperimentConfig = Field(default_factory=ExperimentConfig)
 
     @model_validator(mode="after")
-    def _validate_market_shape(self) -> "Phase2Config":
-        num_assets = self.environment.num_assets
-        if len(self.market.mu) != num_assets:
-            raise ValueError("market.mu length must match environment.num_assets")
-        if len(self.market.cov) != num_assets:
-            raise ValueError("market.cov rows must match environment.num_assets")
-        for row in self.market.cov:
-            if len(row) != num_assets:
-                raise ValueError("market.cov must be square with size num_assets")
+    def _validate_market_shape(self) -> "ExperimentRunConfig":
+        _validate_market_shape(self.market, self.environment.num_assets, "ExperimentRunConfig")
         return self
 
     def seed_values(self) -> list[int]:
@@ -229,6 +241,11 @@ class Phase2Config(BaseModel):
 
     def config_hash(self) -> str:
         return hashlib.md5(self.canonical_json().encode("utf-8"), usedforsecurity=False).hexdigest()
+
+    @property
+    def is_s2(self) -> bool:
+        """True if this is S2 (trust-weighted imitation), False if S1 (independent)."""
+        return self.learning.imitation_beta > 0.0
 
 
 def load_config(config_path: str | Path) -> Phase1Config:
@@ -238,48 +255,26 @@ def load_config(config_path: str | Path) -> Phase1Config:
     return Phase1Config.model_validate(raw)
 
 
-def load_phase2_config(config_path: str | Path) -> Phase2Config:
+def load_experiment_config(config_path: str | Path) -> ExperimentRunConfig:
+    """Load a unified S1/S2 experiment config. imitation_beta=0 → S1, >0 → S2."""
     path = Path(config_path)
     with path.open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle)
-    return Phase2Config.model_validate(raw)
+    return ExperimentRunConfig.model_validate(raw)
 
 
-class Phase3Config(BaseModel):
-    environment: EnvironmentConfig
-    trust: TrustConfig
-    predictor: PredictorConfig
-    learning: LearningConfig
-    market: MarketConfig
-    experiment: ExperimentConfig = Field(default_factory=ExperimentConfig)
+# ---------------------------------------------------------------------------
+# Backwards-compatibility shims — kept so existing scripts don't break.
+# Will be removed after all callers are updated.
+# ---------------------------------------------------------------------------
 
-    @model_validator(mode="after")
-    def _validate_market_shape(self) -> "Phase3Config":
-        num_assets = self.environment.num_assets
-        if len(self.market.mu) != num_assets:
-            raise ValueError("market.mu length must match environment.num_assets")
-        if len(self.market.cov) != num_assets:
-            raise ValueError("market.cov rows must match environment.num_assets")
-        for row in self.market.cov:
-            if len(row) != num_assets:
-                raise ValueError("market.cov must be square with size num_assets")
-        return self
-
-    def seed_values(self) -> list[int]:
-        return [self.experiment.base_seed + i for i in range(self.experiment.num_seeds)]
-
-    def output_root_path(self) -> Path:
-        return Path(self.experiment.output_root)
-
-    def canonical_json(self) -> str:
-        return json.dumps(self.model_dump(), sort_keys=True)
-
-    def config_hash(self) -> str:
-        return hashlib.md5(self.canonical_json().encode("utf-8"), usedforsecurity=False).hexdigest()
+Phase2Config = ExperimentRunConfig
+Phase3Config = ExperimentRunConfig
 
 
-def load_phase3_config(config_path: str | Path) -> Phase3Config:
-    path = Path(config_path)
-    with path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    return Phase3Config.model_validate(raw)
+def load_phase2_config(config_path: str | Path) -> ExperimentRunConfig:
+    return load_experiment_config(config_path)
+
+
+def load_phase3_config(config_path: str | Path) -> ExperimentRunConfig:
+    return load_experiment_config(config_path)

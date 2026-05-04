@@ -1,15 +1,15 @@
 environment:
   num_agents: 5
   num_assets: 4
-  episode_length: 300
+  episode_length: 200
   leverage_cap: 2.0
 
 trust:
   trust_alpha: 0.2
   trust_lambda: 2.0
   entropy_window: 30
-  entropy_slope_threshold: 0.0005
-  convergence_persistence: 10
+  entropy_slope_threshold: 0.00005
+  convergence_persistence: 30
 
 predictor:
   predictor_mode: moving_average
