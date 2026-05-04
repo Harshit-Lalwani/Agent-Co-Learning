@@ -87,6 +87,8 @@ class PredictorConfig(BaseModel):
     predictor_mode: Literal["moving_average", "noisy_oracle", "random"] = "moving_average"
     predictor_window: int = 20
     noise_std: float = 0.01
+    expert_agent_idx: int | None = None
+    expert_noise_std: float = 0.001
 
     @field_validator("predictor_window")
     @classmethod
@@ -95,11 +97,11 @@ class PredictorConfig(BaseModel):
             raise ValueError("predictor_window must be >= 1")
         return value
 
-    @field_validator("noise_std")
+    @field_validator("noise_std", "expert_noise_std")
     @classmethod
     def _validate_noise_std(cls, value: float) -> float:
         if value < 0:
-            raise ValueError("noise_std must be >= 0")
+            raise ValueError("noise_std and expert_noise_std must be >= 0")
         return value
 
 

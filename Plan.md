@@ -280,3 +280,14 @@ Synthesize the multi-seed outputs of the independent S1 models and the collabora
 - **RQ1**: Plot trust entropy and the asymmetry index to verify trust matrix convergence.
 - **RQ2**: Verify the performance difference directly between the S1 and S2 strategies using statistical Sharpe box plots.
 - **RQ3**: Plot terminal asymmetry thresholds against individual evaluation Sharpe scores to study trust-driven inequality.
+
+## Detailed Plan: Phase 5 (Heterogeneous Agents / Expert Peers)
+
+### Objective
+To properly prove trust convergence (RQ1) and the emergence of asymmetric trust topologies (RQ3), the market environment must contain heterogeneous predictors. If all agents produce predictions with identical statistical noise profiles, rational trust algorithms will remain uniform. We will introduce an "Expert Peer" configuration.
+
+### Execution Path
+- **Configuration**: Extend `PredictorConfig` in `src/twmacl/config.py` to optionally accept an `expert_agent_idx` and an `expert_noise_std` value. 
+- **Predictor Modifications**: Update `MovingAveragePredictor` and `NoisyOraclePredictor` to inject the `expert_noise_std` strictly into the specific `expert_agent_idx` row of the generated prediction noise matrix.
+- **Backward Compatibility**: If no expert is defined in the config, the predictors must fall back to their legacy homogeneous behavior to ensure all older Phase 1-4 validation suites remain viable.
+- **Final Validation**: Re-run a targeted S2 ablation with an expert peer and verify that the `entropy_mean` strictly decreases, thereby validating RQ1.

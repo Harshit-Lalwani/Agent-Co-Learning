@@ -110,6 +110,8 @@ def _run_episode(
         mu=np.asarray(config.market.mu, dtype=float),
         cov=np.asarray(config.market.cov, dtype=float),
         seed=predictor_seed + episode,
+        expert_agent_idx=config.predictor.expert_agent_idx,
+        expert_noise_std=config.predictor.expert_noise_std,
     )
 
     # Learning rate decay: linearly anneal from 1.0 to 0.1 over training episodes.
