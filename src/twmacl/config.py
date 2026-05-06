@@ -135,7 +135,7 @@ class LearningConfig(BaseModel):
     # imitation_beta=0.0 → S1 (independent learning)
     # imitation_beta>0.0 → S2 (trust-weighted imitation)
     imitation_beta: float = 0.0
-    policy_mode: Literal["linear_gaussian"] = "linear_gaussian"
+    policy_mode: Literal["linear_gaussian", "mlp_gaussian"] = "linear_gaussian"    
     observation_mode: Literal["history_with_private_state"] = "history_with_private_state"
     # Steps per year for annualized Sharpe (252 = daily, 1 = raw)
     steps_per_year: int = 252

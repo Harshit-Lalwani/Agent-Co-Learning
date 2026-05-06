@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 from twmacl.baselines import evaluate_markowitz, markowitz_sharpe_analytical
 from twmacl.config import ExperimentRunConfig
@@ -12,7 +13,7 @@ from twmacl.logging_io import ParquetSink, write_aggregate_index, write_summary
 from twmacl.market import CorrelatedMarket
 from twmacl.metrics import RunningSharpe
 from twmacl.observation import AgentState, HistoryObservationBuilder
-from twmacl.policies import ActionResult, LinearGaussianPolicy
+from twmacl.policies import ActionResult
 from twmacl.predictors import build_predictor
 from twmacl.trust import TrustMatrix
 
@@ -46,21 +47,40 @@ def _flatten_square_matrix(matrix: np.ndarray, prefix: str) -> dict[str, float]:
     return out
 
 
-def _build_policies(config: ExperimentRunConfig, obs_dim: int, seed: int) -> list[LinearGaussianPolicy]:
-    policies: list[LinearGaussianPolicy] = []
+def _build_policies(config: ExperimentRunConfig, obs_dim: int, seed: int):
+    from twmacl.policies import LinearGaussianPolicy, MLPGaussianPolicy
+    
+    policies = []
     for agent_idx in range(config.environment.num_agents):
-        policies.append(
-            LinearGaussianPolicy(
-                num_assets=config.environment.num_assets,
-                obs_dim=obs_dim,
-                leverage_cap=config.environment.leverage_cap,
-                learning_rate=config.learning.learning_rate,
-                exploration_std=config.learning.exploration_std,
-                reward_baseline_decay=config.learning.reward_baseline_decay,
-                rng=np.random.default_rng(seed + 5_000 + agent_idx),
-                init_scale=config.learning.policy_init_scale,
+        rng = np.random.default_rng(seed + 5_000 + agent_idx)
+        
+        if config.learning.policy_mode == "mlp_gaussian":
+            policies.append(
+                MLPGaussianPolicy(
+                    num_assets=config.environment.num_assets,
+                    obs_dim=obs_dim,
+                    leverage_cap=config.environment.leverage_cap,
+                    learning_rate=config.learning.learning_rate,
+                    exploration_std=config.learning.exploration_std,
+                    reward_baseline_decay=config.learning.reward_baseline_decay,
+                    rng=rng,
+                    init_scale=config.learning.policy_init_scale,
+                    hidden_dim=64  # PyTorch hidden layer size
+                )
             )
-        )
+        else:
+            policies.append(
+                LinearGaussianPolicy(
+                    num_assets=config.environment.num_assets,
+                    obs_dim=obs_dim,
+                    leverage_cap=config.environment.leverage_cap,
+                    learning_rate=config.learning.learning_rate,
+                    exploration_std=config.learning.exploration_std,
+                    reward_baseline_decay=config.learning.reward_baseline_decay,
+                    rng=rng,
+                    init_scale=config.learning.policy_init_scale,
+                )
+            )
     return policies
 
 
@@ -79,7 +99,7 @@ def _run_episode(
     episode: int,
     total_episodes: int,
     mode: str,
-    policies: list[LinearGaussianPolicy],
+    policies: list,
     builder: HistoryObservationBuilder,
     trust: TrustMatrix,
     predictor_seed: int,
@@ -173,9 +193,28 @@ def _run_episode(
                 for policy, obs in zip(policies, observations, strict=True)
             ]
 
+       # --- GAME THEORY SLIPPAGE INJECTION (FIXED DIRECTIONAL MATH) ---
+        KAPPA = 0.005 # Market Impact Coefficient
+        
         executed_actions = np.vstack([result.executed for result in action_results])
         raw_actions = np.vstack([result.raw for result in action_results])
-        agent_returns = np.sum(executed_actions * realized_return[None, :], axis=1)
+        
+        # 1. Calculate total market crowding (absolute exposure)
+        total_market_weights = np.sum(np.abs(executed_actions), axis=0)
+        
+        # 2. Asset-specific quadratic slippage cost
+        slippage_cost = KAPPA * (total_market_weights ** 2)
+        
+        # 3. Calculate raw, unpenalized agent returns
+        raw_agent_returns = np.sum(executed_actions * realized_return[None, :], axis=1)
+        
+        # 4. Subtract the penalty strictly based on the agent's absolute exposure 
+        # (Punishes both heavily crowded longs AND shorts)
+        agent_penalty = np.sum(np.abs(executed_actions) * slippage_cost[None, :], axis=1)
+        
+        agent_returns = raw_agent_returns - agent_penalty
+        # --- END INJECTION ---
+        
         sharpe_running = sharpe.update(agent_returns, annualization_factor=float(steps_per_year))
         final_sharpe_running = sharpe_running
         cumulative_return += agent_returns
@@ -260,11 +299,7 @@ def _run_episode(
 # ---------------------------------------------------------------------------
 
 def run_experiment(config: ExperimentRunConfig) -> None:
-    """Run S1 (beta=0) or S2 (beta>0) experiment across all seeds.
-
-    Phases 2 and 3 from the plan both use this function — the strategy
-    is entirely determined by config.learning.imitation_beta.
-    """
+    """Run S1 (beta=0) or S2 (beta>0) experiment across all seeds."""
     output_root = config.output_root_path()
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -310,7 +345,7 @@ def run_experiment(config: ExperimentRunConfig) -> None:
         num_eval = config.learning.num_eval_episodes
 
         train_summaries: list[dict[str, float | int | str]] = []
-        for episode in range(num_train):
+        for episode in tqdm(range(num_train), desc=f"Seed {seed} [Training]", unit="ep", leave=False):
             train_summaries.append(
                 _run_episode(
                     config=config,
@@ -328,7 +363,7 @@ def run_experiment(config: ExperimentRunConfig) -> None:
             )
 
         eval_summaries: list[dict[str, float | int | str]] = []
-        for episode in range(num_eval):
+        for episode in tqdm(range(num_eval), desc=f"Seed {seed} [Evaluating]", unit="ep", leave=False):
             eval_summaries.append(
                 _run_episode(
                     config=config,
@@ -350,17 +385,21 @@ def run_experiment(config: ExperimentRunConfig) -> None:
         train_sink.write_steps(train_step_file)
         eval_sink.write_steps(eval_step_file)
 
-        # Save policy checkpoints.
-        policy_checkpoint = output_root / "checkpoints" / f"seed_{seed:05d}_policy.npz"
-        policy_checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint_payload: dict[str, np.ndarray] = {}
-        for agent_idx, policy in enumerate(policies):
-            checkpoint_payload[f"weights_{agent_idx}"] = policy.weights
-            checkpoint_payload[f"bias_{agent_idx}"] = policy.bias
-            checkpoint_payload[f"reward_baseline_{agent_idx}"] = np.array(
-                [policy.reward_baseline], dtype=float
-            )
-        np.savez(policy_checkpoint, **checkpoint_payload)
+        # Save policy checkpoints. (Only valid for linear_gaussian currently, safely skipped or adapted for MLP if needed)
+        try:
+            policy_checkpoint = output_root / "checkpoints" / f"seed_{seed:05d}_policy.npz"
+            policy_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_payload: dict[str, np.ndarray] = {}
+            for agent_idx, policy in enumerate(policies):
+                if hasattr(policy, 'weights'):
+                    checkpoint_payload[f"weights_{agent_idx}"] = policy.weights
+                    checkpoint_payload[f"bias_{agent_idx}"] = policy.bias
+                checkpoint_payload[f"reward_baseline_{agent_idx}"] = np.array(
+                    [policy.reward_baseline], dtype=float
+                )
+            np.savez(policy_checkpoint, **checkpoint_payload)
+        except Exception:
+            pass # Skip checkpointing for PyTorch models unless fully implemented
 
         # Per-seed summary.
         train_sharpe_by_ep = [float(item["final_sharpe_mean"]) for item in train_summaries]

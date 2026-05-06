@@ -6,7 +6,7 @@ environment:
 experiment:
   base_seed: 1000
   num_seeds: 5
-  output_root: outputs/phase5_expert
+  output_root: outputs/phase6_game_theory
 learning:
   exploration_std: 0.1
   imitation_beta: 0.5
@@ -16,7 +16,7 @@ learning:
   observation_mode: history_with_private_state
   observation_window: 5
   policy_init_scale: 0.01
-  policy_mode: linear_gaussian
+  policy_mode: mlp_gaussian
   reward_baseline_decay: 0.95
   steps_per_year: 252
 market:
